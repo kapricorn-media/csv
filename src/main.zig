@@ -1,5 +1,17 @@
 const std = @import("std");
 
+fn countScalar(comptime T: type, haystack: []const T, needle: T) usize {
+    var i: usize = 0;
+    var found: usize = 0;
+
+    while (std.mem.indexOfScalarPos(T, haystack, i, needle)) |idx| {
+        i = idx + 1;
+        found += 1;
+    }
+
+    return found;
+}
+
 pub fn CsvFileParser(comptime RowType: type) type
 {
     const T = struct {
@@ -37,7 +49,10 @@ pub fn CsvFileParser(comptime RowType: type) type
             const tempAllocator = arenaAllocator.allocator();
 
             const cwd = std.fs.cwd();
-            const file = try cwd.openFile(filePath, .{});
+            const file = cwd.openFile(filePath, .{}) catch |err| {
+                std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+                return err;
+            };
 
             var buf = try self.allocator.alloc(u8, 16 * 1024);
             var totalBytes: usize = 0;
@@ -48,31 +63,37 @@ pub fn CsvFileParser(comptime RowType: type) type
                     break;
                 }
                 totalBytes += numBytes;
-                rows += std.mem.count(u8, buf, "\n");
+                rows += countScalar(u8, buf, '\n');
             }
 
             std.debug.print("Read {} MB file, {} rows\n", .{totalBytes / 1024 / 1024, rows});
 
+            // TODO we can try std.ArrayList instead of having to scan the file twice for row count.
+            // Just gotta measure what's faster (will vary based on disk speed, though maybe we
+            // wanna minimize disk IO because that has higher potential to be slow ??).
             if (rows > 0) {
                 self.rows = try self.allocator.alloc(RowType, rows);
             }
 
-            _ = tempAllocator;
             // var lineBuf = std.ArrayList(u8).init(tempAllocator);
-            // try file.seekTo(0);
-            // while (true) {
-            //     const numBytes = try file.read(buf);
-            //     if (numBytes == 0) {
-            //         break;
-            //     }
+            try file.seekTo(0);
+            while (true) {
+                const numBytes = try file.read(buf);
+                if (numBytes == 0) {
+                    break;
+                }
 
-            //     const bytes = buf[0..numBytes];
-            //     var itLines = std.mem.split(u8, bytes, "\n");
-            //     while (itLines.next()) |l| {
-            //         lineBuf.clearRetainingCapacity();
-            //         try lineBuf.appendSlice(l);
-            //     }
-            // }
+                const bytes = buf[0..numBytes];
+                var remaining = bytes;
+                while (true) {
+                    if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
+                        const line = remaining[0..i];
+                        remaining = remaining[i+1..];
+                        _ = line;
+                        _ = tempAllocator;
+                    }
+                }
+            }
 
             // var bytes = csvBytes;
             // if (self.header) {
@@ -128,11 +149,27 @@ pub fn main() !void
     var arenaAllocator = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arenaAllocator.deinit();
 
-    const filePath = "megabytes.csv";
+    const filePath = "aella.csv";
+    // const filePath = "megabytes.csv";
     // const filePath = "gigabytes.csv";
 
     var parser = CsvFileParser(Row).init("\n", arenaAllocator.allocator());
     try parser.parse(filePath);
 
     // std.debug.print("Read {} MB\n", .{totalBytes / 1024 / 1024});
+}
+
+test "Zig slice test" {
+    const str = [_]u8{'h', 'e', 'l', 'l', 'o'};
+
+    const strSlice = str[0..];
+    try std.testing.expectEqual(5, strSlice.len);
+    try std.testing.expectEqualSlices(u8, "hello", strSlice);
+    const sub1 = strSlice[1..];
+    try std.testing.expectEqualSlices(u8, "ello", sub1);
+    const sub2 = strSlice[4..];
+    try std.testing.expectEqualSlices(u8, "o", sub2);
+    const sub3 = strSlice[5..]; // 1 past the end is fine
+    try std.testing.expectEqual(0, sub3.len);
+    try std.testing.expectEqualSlices(u8, "", sub3);
 }
