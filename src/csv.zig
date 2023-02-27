@@ -12,13 +12,29 @@ fn countScalar(comptime T: type, haystack: []const T, needle: T) usize {
     return found;
 }
 
-const columnTypePriority = [_]type {
+// const columnTypePriority = [_]type {
+//     void,
+//     i8,
+//     i16,
+//     i32,
+//     i64,
+//     f32,
+//     []const u8,
+// };
+
+const ColumnType = enum {
+    void,
     i8,
     i16,
     i32,
     i64,
     f32,
-    []const u8,
+    string,
+};
+
+const ColumnData = struct {
+    name: []const u8,
+    type: ColumnType,
 };
 
 pub const CsvFileParserAuto = struct {
@@ -27,7 +43,7 @@ pub const CsvFileParserAuto = struct {
 
     const Self = @This();
 
-    pub fn init(delim: []const u8, allocator: std.mem.Allocator) !Self
+    pub fn init(delim: []const u8, allocator: std.mem.Allocator) Self
     {
         return Self {
             .allocator = allocator,
@@ -53,72 +69,123 @@ pub const CsvFileParserAuto = struct {
         };
 
         var buf = try self.allocator.alloc(u8, 16 * 1024);
+        var lineBuf = std.ArrayList(u8).init(tempAllocator);
         var totalBytes: usize = 0;
         var rows: usize = 0;
+        var header = true;
+        var columnData = std.ArrayList(ColumnData).init(tempAllocator);
         while (true) {
             const numBytes = try file.read(buf);
             if (numBytes == 0) {
                 break;
             }
             totalBytes += numBytes;
-            rows += countScalar(u8, buf, '\n');
-        }
-
-        std.debug.print("Read {} MB file, {} rows\n", .{totalBytes / 1024 / 1024, rows});
-
-        // TODO we can try std.ArrayList instead of having to scan the file twice for row count.
-        // Just gotta measure what's faster (will vary based on disk speed, though maybe we
-        // wanna minimize disk IO because that has higher potential to be slow ??).
-        if (rows > 0) {
-            self.rows = try self.allocator.alloc(RowType, rows);
-        }
-
-        // var lineBuf = std.ArrayList(u8).init(tempAllocator);
-        var header = true;
-        var rowIndex: usize = 0;
-        try file.seekTo(0);
-        var leftover = false;
-        while (true) {
-            const numBytes = try file.read(buf);
-            if (numBytes == 0) {
-                break;
-            }
 
             const bytes = buf[0..numBytes];
             var remaining = bytes;
             while (true) {
                 if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
-                    defer remaining = remaining[i+1..];
-
-                    if (header) {
-                        header = false;
-                        continue;
+                    defer {
+                        lineBuf.clearRetainingCapacity();
+                        remaining = remaining[i+1..];
                     }
 
-                    if (leftover) {
-                        leftover = false;
-                        // TODO special handling
-                        continue;
-                    }
-
-                    var line = remaining[0..i];
+                    var line = blk: {
+                        if (lineBuf.items.len > 0) {
+                            try lineBuf.appendSlice(remaining[0..i]);
+                            break :blk lineBuf.items;
+                        } else {
+                            break :blk remaining[0..i];
+                        }
+                    };
                     if (line.len > 0 and line[line.len - 1] == '\r') {
                         line = line[0..line.len - 1];
                     }
-                    if (rowIndex >= self.rows.len) {
-                        return error.TooManyRows;
+
+                    if (header) {
+                        header = false;
+
+                        var columnIt = std.mem.split(u8, line, self.delim);
+                        while (columnIt.next()) |c| {
+                            try columnData.append(ColumnData {
+                                .name = try tempAllocator.dupe(u8, c),
+                                .type = .void,
+                            });
+                        }
+                    } else {
+                        // TODO
                     }
-                    try parseCsvLine(line, self.delim, &self.rows[rowIndex]);
-                    rowIndex += 1;
+
+                    rows += 1;
                 } else {
-                    _ = tempAllocator;
                     if (remaining.len > 0) {
-                        leftover = true;
+                        try lineBuf.appendSlice(remaining);
                     }
                     break;
                 }
             }
         }
+
+        if (lineBuf.items.len > 0) {
+            // process line here too
+            rows += 1;
+        }
+
+        std.debug.print("Read {} MB file, {} rows, {} columns\n", .{totalBytes / 1024 / 1024, rows, columnData.items.len});
+
+        // TODO we can try std.ArrayList instead of having to scan the file twice for row count.
+        // Just gotta measure what's faster (will vary based on disk speed, though maybe we
+        // wanna minimize disk IO because that has higher potential to be slow ??).
+        // if (rows > 0) {
+        //     self.rows = try self.allocator.alloc(RowType, rows);
+        // }
+
+        // // var lineBuf = std.ArrayList(u8).init(tempAllocator);
+        // var header = true;
+        // var rowIndex: usize = 0;
+        // try file.seekTo(0);
+        // var leftover = false;
+        // while (true) {
+        //     const numBytes = try file.read(buf);
+        //     if (numBytes == 0) {
+        //         break;
+        //     }
+
+        //     const bytes = buf[0..numBytes];
+        //     var remaining = bytes;
+        //     while (true) {
+        //         if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
+        //             defer remaining = remaining[i+1..];
+
+        //             if (header) {
+        //                 header = false;
+        //                 continue;
+        //             }
+
+        //             if (leftover) {
+        //                 leftover = false;
+        //                 // TODO special handling
+        //                 continue;
+        //             }
+
+        //             var line = remaining[0..i];
+        //             if (line.len > 0 and line[line.len - 1] == '\r') {
+        //                 line = line[0..line.len - 1];
+        //             }
+        //             if (rowIndex >= self.rows.len) {
+        //                 return error.TooManyRows;
+        //             }
+        //             try parseCsvLine(line, self.delim, &self.rows[rowIndex]);
+        //             rowIndex += 1;
+        //         } else {
+        //             _ = tempAllocator;
+        //             if (remaining.len > 0) {
+        //                 leftover = true;
+        //             }
+        //             break;
+        //         }
+        //     }
+        // }
     }
 };
 

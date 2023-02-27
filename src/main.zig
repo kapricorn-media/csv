@@ -243,12 +243,15 @@ pub fn main() !void
     // const filePath = "megabytes.csv";
     // const filePath = "gigabytes.csv";
 
-    var parser = csv.CsvFileParser(Row).init(",", arenaAllocator.allocator());
-    try parser.parse(filePath);
+    // var parser = csv.CsvFileParser(Row).init(",", arenaAllocator.allocator());
+    // try parser.parse(filePath);
 
-    if (parser.rows.len > 0) {
-        std.debug.print("{}\n", .{parser.rows[0]});
-    }
+    // if (parser.rows.len > 0) {
+    //     std.debug.print("{}\n", .{parser.rows[0]});
+    // }
+
+    var parserAuto = csv.CsvFileParserAuto.init(",", arenaAllocator.allocator());
+    try parserAuto.parse(filePath);
 }
 
 test "Zig slice test" {
