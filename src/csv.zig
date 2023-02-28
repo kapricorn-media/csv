@@ -35,6 +35,11 @@ fn getZigType(comptime columnType: ColumnType) type
     };
 }
 
+const ColumnMetadata = struct {
+    names: [][]const u8,
+    types: []ColumnType,
+};
+
 const ColumnData = struct {
     name: []const u8, // not great for cache locality
     type: ColumnType,
@@ -97,17 +102,116 @@ fn parseRow(
     line: []const u8,
     delim: []const u8,
     columnData: []ColumnData,
-    allocator: std.mem.Allocator) ![]?ColumnValue
+    values: []?ColumnValue) !void
 {
-    var values = try allocator.alloc(?ColumnValue, columnData.len);
+    std.debug.assert(columnData.len == values.len);
 
     var columnIt = std.mem.split(u8, line, delim);
     for (columnData) |*cd, i| {
         const valueString = columnIt.next() orelse "";
         values[i] = try parseColumn(valueString, &cd.type);
     }
+}
 
-    return values;
+const ParseState = struct {
+    fileBuf: [16 * 1024]u8,
+    lineBytes: usize,
+    lineBuf: [16 * 1024]u8,
+};
+
+const LineIterator = struct {
+    parseState: *ParseState,
+
+    const Self = @This();
+
+    fn init(parseState: *ParseState) Self
+    {
+        parseState.lineBytes = 0;
+        return Self {
+            .parseState = parseState,
+        };
+    }
+
+    fn next(self: *Self, reader: anytype) ?[]const u8
+    {
+        while (true) {
+            const numBytes = try reader.read(&self.parseState.fileBuf);
+            if (numBytes == 0) {
+                break;
+            }
+
+            const bytes = self.parseState.fileBuf[0..numBytes];
+            var remaining = bytes;
+            while (true) {
+                if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
+                    defer {
+                        remaining = remaining[i+1..];
+                    }
+
+                    var line = blk: {
+                        if (self.parseState.lineBytes > 0) {
+                            const newSize = self.parseState.lineBytes + i;
+                            if (newSize > self.parseState.lineBuf.len) {
+                                return error.LineTooLong;
+                            }
+                            std.mem.copy(
+                                u8,
+                                self.parseState.lineBuf[self.parseState.lineBytes..newSize],
+                                remaining[0..i]
+                            );
+                            self.parseState.lineBytes = 0;
+                            break :blk self.parseState.lineBuf[0..newSize];
+                        } else {
+                            break :blk remaining[0..i];
+                        }
+                    };
+                    if (line.len > 0 and line[line.len - 1] == '\r') {
+                        line = line[0..line.len - 1];
+                    }
+                } else {
+                    if (remaining.len > 0) {
+                        const newSize = self.parseState.lineBytes + remaining.len;
+                        _ = newSize;
+                        // if (newSize > 0)
+                        // try self.parseState.lineBuf.appendSlice(remaining);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+};
+
+fn getNumColumns(filePath: []const u8, parseState: *ParseState) !usize
+{
+    const cwd = std.fs.cwd();
+    const file = cwd.openFile(filePath, .{}) catch |err| {
+        std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+        return err;
+    };
+
+    _ = file;
+    _ = parseState;
+}
+
+fn getColumnMetadata(
+    filePath: []const u8,
+    fileStart: usize,
+    fileBytes: usize,
+    columnMetadata: *ColumnMetadata) !void
+{
+    const cwd = std.fs.cwd();
+    const file = cwd.openFile(filePath, .{}) catch |err| {
+        std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+        return err;
+    };
+
+    // var buf = try self.allocator.alloc(u8, 16 * 1024);
+
+    _ = file;
+    _ = fileStart;
+    _ = fileBytes;
+    _ = columnMetadata;
 }
 
 pub const CsvFileParserAuto = struct {
@@ -147,6 +251,7 @@ pub const CsvFileParserAuto = struct {
 
         var buf = try self.allocator.alloc(u8, 16 * 1024);
         var lineBuf = std.ArrayList(u8).init(tempAllocator);
+        var valuesBuf = try tempAllocator.alloc(?ColumnValue, 512);
         var totalBytes: usize = 0;
         var header = true;
         while (true) {
@@ -183,12 +288,17 @@ pub const CsvFileParserAuto = struct {
                         var columnIt = std.mem.split(u8, line, self.delim);
                         while (columnIt.next()) |c| {
                             try self.columnData.append(ColumnData {
-                                .name = try tempAllocator.dupe(u8, c),
+                                .name = try self.allocator.dupe(u8, c),
                                 .type = .none,
                             });
                         }
+
+                        if (self.columnData.items.len > valuesBuf.len) {
+                            return error.TooManyColumns;
+                        }
                     } else {
-                        try self.rows.append(try parseRow(line, self.delim, self.columnData.items, self.allocator));
+                        try parseRow(line, self.delim, self.columnData.items, valuesBuf[0..self.columnData.items.len]);
+                        // try self.rows.append(values);
                     }
                 } else {
                     if (remaining.len > 0) {
@@ -200,7 +310,8 @@ pub const CsvFileParserAuto = struct {
         }
 
         if (lineBuf.items.len > 0) {
-            try self.rows.append(try parseRow(lineBuf.items, self.delim, self.columnData.items, self.allocator));
+            try parseRow(lineBuf.items, self.delim, self.columnData.items, valuesBuf[0..self.columnData.items.len]);
+            // try self.rows.append(values);
         }
 
         std.debug.print(

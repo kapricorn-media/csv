@@ -239,9 +239,10 @@ pub fn main() !void
     var arenaAllocator = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arenaAllocator.deinit();
 
-    const filePath = "aella.csv";
-    // const filePath = "megabytes.csv";
-    // const filePath = "gigabytes.csv";
+    // const filePath = "aella.csv";
+    // const filePath = "100MB.csv";
+    // const filePath = "800MB.csv";
+    const filePath = "4GB.csv";
 
     // var parser = csv.CsvFileParser(Row).init(",", arenaAllocator.allocator());
     // try parser.parse(filePath);
@@ -250,16 +251,26 @@ pub fn main() !void
     //     std.debug.print("{}\n", .{parser.rows[0]});
     // }
 
+    const timeStart = std.time.nanoTimestamp();
+
     var parserAuto = csv.CsvFileParserAuto.init(",", arenaAllocator.allocator());
     try parserAuto.parse(filePath);
+
+    const timeEnd = std.time.nanoTimestamp();
+    const elapsedNs = @intToFloat(f64, timeEnd) - @intToFloat(f64, timeStart);
+    const elapsedS = elapsedNs / 1000.0 / 1000.0 / 1000.0;
 
     for (parserAuto.columnData.items) |c| {
         std.debug.print("{s}: {}\n", .{c.name, c.type});
     }
-    for (parserAuto.rows.items[0..10]) |row| {
-        std.debug.print("{any}\n\n", .{row});
+    if (parserAuto.rows.items.len >= 10) {
+        for (parserAuto.rows.items[0..10]) |row| {
+            std.debug.print("{any}\n\n", .{row});
+        }
+        std.debug.print("{any}\n\n", .{parserAuto.rows.items[parserAuto.rows.items.len - 1]});
     }
-    std.debug.print("{any}\n\n", .{parserAuto.rows.items[parserAuto.rows.items.len - 1]});
+
+    std.debug.print("CSV loading took {d:.3} seconds\n", .{elapsedS});
 }
 
 test "Zig slice test" {
