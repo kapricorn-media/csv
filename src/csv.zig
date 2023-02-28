@@ -37,6 +37,15 @@ const ColumnData = struct {
     type: ColumnType,
 };
 
+fn parseRow(line: []const u8, delim: []const u8, columnData: []ColumnData) !void
+{
+    var columnIt = std.mem.split(u8, line, delim);
+    for (columnData) |cd| {
+        _ = cd;
+        _ = columnIt;
+    }
+}
+
 pub const CsvFileParserAuto = struct {
     allocator: std.mem.Allocator,
     delim: []const u8,
@@ -113,10 +122,9 @@ pub const CsvFileParserAuto = struct {
                             });
                         }
                     } else {
-                        // TODO
+                        try parseRow(line, self.delim, columnData.items);
+                        rows += 1;
                     }
-
-                    rows += 1;
                 } else {
                     if (remaining.len > 0) {
                         try lineBuf.appendSlice(remaining);
@@ -127,11 +135,14 @@ pub const CsvFileParserAuto = struct {
         }
 
         if (lineBuf.items.len > 0) {
-            // process line here too
+            try parseRow(lineBuf.items, self.delim, columnData.items);
             rows += 1;
         }
 
-        std.debug.print("Read {} MB file, {} rows, {} columns\n", .{totalBytes / 1024 / 1024, rows, columnData.items.len});
+        std.debug.print(
+            "Read {} MB file, {} rows, {} columns\n",
+            .{totalBytes / 1024 / 1024, rows, columnData.items.len}
+        );
 
         // TODO we can try std.ArrayList instead of having to scan the file twice for row count.
         // Just gotta measure what's faster (will vary based on disk speed, though maybe we
