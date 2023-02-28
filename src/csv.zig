@@ -12,18 +12,8 @@ fn countScalar(comptime T: type, haystack: []const T, needle: T) usize {
     return found;
 }
 
-// const columnTypePriority = [_]type {
-//     void,
-//     i8,
-//     i16,
-//     i32,
-//     i64,
-//     f32,
-//     []const u8,
-// };
-
-const ColumnType = enum {
-    void,
+const ColumnType = enum(u8) {
+    none = 0,
     i8,
     i16,
     i32,
@@ -32,36 +22,99 @@ const ColumnType = enum {
     string,
 };
 
+fn getZigType(comptime columnType: ColumnType) type
+{
+    return switch (columnType) {
+        .none => void,
+        .i8 => i8,
+        .i16 => i16,
+        .i32 => i32,
+        .i64 => i64,
+        .f32 => f32,
+        .string => []const u8,
+    };
+}
+
 const ColumnData = struct {
     name: []const u8, // not great for cache locality
     type: ColumnType,
 };
 
-fn parseColumn(value: []const u8, columnType: *ColumnType) !void
+const ColumnValue = union(ColumnType) {
+    none: void,
+    i8: i8,
+    i16: i16,
+    i32: i32,
+    i64: i64,
+    f32: f32,
+    string: []const u8,
+};
+
+fn parseColumn(valueString: []const u8, columnType: *ColumnType) !?ColumnValue
 {
-    _ = value;
-    _ = columnType;
+    if (valueString.len == 0) {
+        return null;
+    }
+
+    var ct = columnType.*;
+    while (true) : (ct = @intToEnum(ColumnType, @enumToInt(ct) + 1)) {
+        switch (ct) {
+            .none => {},
+            // .i8, .i16, .i32, .i64 => {
+            //     const value = std.fmt.parseInt(i64, valueString, 10) catch continue;
+            //     columnType.* = ct;
+            //     return ColumnValue {
+            //         .i64 = value
+            //     };
+            // },
+            .f32 => {
+                const value = std.fmt.parseFloat(f32, valueString) catch continue;
+                columnType.* = ct;
+                return ColumnValue {
+                    .f32 = value
+                };
+            },
+            .string => {
+                columnType.* = ct;
+                return ColumnValue {
+                    .string = ""
+                };
+            },
+            inline else => |t| {
+                const value = std.fmt.parseInt(getZigType(t), valueString, 10) catch continue;
+                columnType.* = ct;
+                return @unionInit(ColumnValue, @tagName(t), value);
+                // var columnValue: ColumnValue = undefined;
+                // return ColumnValue {
+                //     value
+                // };
+            },
+        }
+    }
 }
 
-fn parseRow(line: []const u8, delim: []const u8, columnData: []ColumnData) !void
+fn parseRow(
+    line: []const u8,
+    delim: []const u8,
+    columnData: []ColumnData,
+    allocator: std.mem.Allocator) ![]?ColumnValue
 {
+    var values = try allocator.alloc(?ColumnValue, columnData.len);
+
     var columnIt = std.mem.split(u8, line, delim);
     for (columnData) |*cd, i| {
-        const valueString = columnIt.next() orelse {
-            if (cd.type == .void) {
-                break;
-            }
-            std.log.err("Missing column {} (\"{s}\") in row \"{s}\"", .{i, cd.name, line});
-            return error.MissingColumn;
-        };
-
-        try parseColumn(valueString, &cd.type);
+        const valueString = columnIt.next() orelse "";
+        values[i] = try parseColumn(valueString, &cd.type);
     }
+
+    return values;
 }
 
 pub const CsvFileParserAuto = struct {
     allocator: std.mem.Allocator,
     delim: []const u8,
+    columnData: std.ArrayList(ColumnData),
+    rows: std.ArrayList([]?ColumnValue),
 
     const Self = @This();
 
@@ -70,6 +123,8 @@ pub const CsvFileParserAuto = struct {
         return Self {
             .allocator = allocator,
             .delim = delim,
+            .columnData = std.ArrayList(ColumnData).init(allocator),
+            .rows = std.ArrayList([]?ColumnValue).init(allocator),
         };
     }
 
@@ -93,9 +148,7 @@ pub const CsvFileParserAuto = struct {
         var buf = try self.allocator.alloc(u8, 16 * 1024);
         var lineBuf = std.ArrayList(u8).init(tempAllocator);
         var totalBytes: usize = 0;
-        var rows: usize = 0;
         var header = true;
-        var columnData = std.ArrayList(ColumnData).init(tempAllocator);
         while (true) {
             const numBytes = try file.read(buf);
             if (numBytes == 0) {
@@ -129,14 +182,13 @@ pub const CsvFileParserAuto = struct {
 
                         var columnIt = std.mem.split(u8, line, self.delim);
                         while (columnIt.next()) |c| {
-                            try columnData.append(ColumnData {
+                            try self.columnData.append(ColumnData {
                                 .name = try tempAllocator.dupe(u8, c),
-                                .type = .void,
+                                .type = .none,
                             });
                         }
                     } else {
-                        try parseRow(line, self.delim, columnData.items);
-                        rows += 1;
+                        try self.rows.append(try parseRow(line, self.delim, self.columnData.items, self.allocator));
                     }
                 } else {
                     if (remaining.len > 0) {
@@ -148,68 +200,13 @@ pub const CsvFileParserAuto = struct {
         }
 
         if (lineBuf.items.len > 0) {
-            try parseRow(lineBuf.items, self.delim, columnData.items);
-            rows += 1;
+            try self.rows.append(try parseRow(lineBuf.items, self.delim, self.columnData.items, self.allocator));
         }
 
         std.debug.print(
             "Read {} MB file, {} rows, {} columns\n",
-            .{totalBytes / 1024 / 1024, rows, columnData.items.len}
+            .{totalBytes / 1024 / 1024, self.rows.items.len, self.columnData.items.len}
         );
-
-        // TODO we can try std.ArrayList instead of having to scan the file twice for row count.
-        // Just gotta measure what's faster (will vary based on disk speed, though maybe we
-        // wanna minimize disk IO because that has higher potential to be slow ??).
-        // if (rows > 0) {
-        //     self.rows = try self.allocator.alloc(RowType, rows);
-        // }
-
-        // // var lineBuf = std.ArrayList(u8).init(tempAllocator);
-        // var header = true;
-        // var rowIndex: usize = 0;
-        // try file.seekTo(0);
-        // var leftover = false;
-        // while (true) {
-        //     const numBytes = try file.read(buf);
-        //     if (numBytes == 0) {
-        //         break;
-        //     }
-
-        //     const bytes = buf[0..numBytes];
-        //     var remaining = bytes;
-        //     while (true) {
-        //         if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
-        //             defer remaining = remaining[i+1..];
-
-        //             if (header) {
-        //                 header = false;
-        //                 continue;
-        //             }
-
-        //             if (leftover) {
-        //                 leftover = false;
-        //                 // TODO special handling
-        //                 continue;
-        //             }
-
-        //             var line = remaining[0..i];
-        //             if (line.len > 0 and line[line.len - 1] == '\r') {
-        //                 line = line[0..line.len - 1];
-        //             }
-        //             if (rowIndex >= self.rows.len) {
-        //                 return error.TooManyRows;
-        //             }
-        //             try parseCsvLine(line, self.delim, &self.rows[rowIndex]);
-        //             rowIndex += 1;
-        //         } else {
-        //             _ = tempAllocator;
-        //             if (remaining.len > 0) {
-        //                 leftover = true;
-        //             }
-        //             break;
-        //         }
-        //     }
-        // }
     }
 };
 

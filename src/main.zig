@@ -252,6 +252,14 @@ pub fn main() !void
 
     var parserAuto = csv.CsvFileParserAuto.init(",", arenaAllocator.allocator());
     try parserAuto.parse(filePath);
+
+    for (parserAuto.columnData.items) |c| {
+        std.debug.print("{s}: {}\n", .{c.name, c.type});
+    }
+    for (parserAuto.rows.items[0..10]) |row| {
+        std.debug.print("{any}\n\n", .{row});
+    }
+    std.debug.print("{any}\n\n", .{parserAuto.rows.items[parserAuto.rows.items.len - 1]});
 }
 
 test "Zig slice test" {
