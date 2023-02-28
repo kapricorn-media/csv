@@ -33,16 +33,29 @@ const ColumnType = enum {
 };
 
 const ColumnData = struct {
-    name: []const u8,
+    name: []const u8, // not great for cache locality
     type: ColumnType,
 };
+
+fn parseColumn(value: []const u8, columnType: *ColumnType) !void
+{
+    _ = value;
+    _ = columnType;
+}
 
 fn parseRow(line: []const u8, delim: []const u8, columnData: []ColumnData) !void
 {
     var columnIt = std.mem.split(u8, line, delim);
-    for (columnData) |cd| {
-        _ = cd;
-        _ = columnIt;
+    for (columnData) |*cd, i| {
+        const valueString = columnIt.next() orelse {
+            if (cd.type == .void) {
+                break;
+            }
+            std.log.err("Missing column {} (\"{s}\") in row \"{s}\"", .{i, cd.name, line});
+            return error.MissingColumn;
+        };
+
+        try parseColumn(valueString, &cd.type);
     }
 }
 
