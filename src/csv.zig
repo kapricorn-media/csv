@@ -171,9 +171,15 @@ const LineIterator = struct {
                 } else {
                     if (remaining.len > 0) {
                         const newSize = self.parseState.lineBytes + remaining.len;
-                        _ = newSize;
-                        // if (newSize > 0)
-                        // try self.parseState.lineBuf.appendSlice(remaining);
+                        if (newSize > self.parseState.lineBuf.len) {
+                            return error.LineTooLong;
+                        }
+                        std.mem.copy(
+                            u8,
+                            self.parseState.lineBuf[self.parseState.lineBytes..newSize],
+                            remaining
+                        );
+                        self.parseState.lineBytes = newSize;
                     }
                     break;
                 }
@@ -192,6 +198,8 @@ fn getNumColumns(filePath: []const u8, parseState: *ParseState) !usize
 
     _ = file;
     _ = parseState;
+
+    return 0;
 }
 
 fn getColumnMetadata(
@@ -242,6 +250,10 @@ pub const CsvFileParserAuto = struct {
         var arenaAllocator = std.heap.ArenaAllocator.init(self.allocator);
         defer arenaAllocator.deinit();
         const tempAllocator = arenaAllocator.allocator();
+
+        var parseState = try tempAllocator.create(ParseState);
+        const numColumns = try getNumColumns(filePath, parseState);
+        std.debug.print("{}\n", .{numColumns});
 
         const cwd = std.fs.cwd();
         const file = cwd.openFile(filePath, .{}) catch |err| {

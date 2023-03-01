@@ -239,10 +239,10 @@ pub fn main() !void
     var arenaAllocator = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arenaAllocator.deinit();
 
-    // const filePath = "aella.csv";
+    const filePath = "aella.csv";
     // const filePath = "100MB.csv";
     // const filePath = "800MB.csv";
-    const filePath = "4GB.csv";
+    // const filePath = "4GB.csv";
 
     // var parser = csv.CsvFileParser(Row).init(",", arenaAllocator.allocator());
     // try parser.parse(filePath);
