@@ -15,24 +15,44 @@ pub fn main() !void
 
     const timeStart = std.time.nanoTimestamp();
 
-    var parserAuto = csv.CsvFileParserAuto.init(",", gpa.allocator());
-    defer parserAuto.deinit();
-    try parserAuto.parse(filePath);
+    var csvParser = try csv.CsvFileParserAuto.init(filePath, ",", gpa.allocator());
+    defer csvParser.deinit();
 
     const timeEnd = std.time.nanoTimestamp();
     const elapsedNs = @intToFloat(f64, timeEnd) - @intToFloat(f64, timeStart);
     const elapsedS = elapsedNs / 1000.0 / 1000.0 / 1000.0;
 
-    for (parserAuto.csvMetadataExt.columnNames) |_, i| {
+    for (csvParser.metadataExt.columnNames) |_, i| {
         std.debug.print("{s}: {}\n", .{
-            parserAuto.csvMetadataExt.columnNames[i], parserAuto.csvMetadataExt.columnTypes[i]
+            csvParser.metadataExt.columnNames[i], csvParser.metadataExt.columnTypes[i]
         });
     }
+    const numSampleRows = 5;
+    if (csvParser.metadataExt.numRows >= numSampleRows) {
+        var row: usize = 0;
+        while (row < numSampleRows) : (row += 1) {
+            for (csvParser.metadataExt.columnTypes) |columnType, col| {
+                switch (columnType) {
+                    .none, .string => {
+                        std.debug.print(",", .{});
+                    },
+                    inline else => |ct| {
+                        const offsetBase = csvParser.metadataExt.columnOffsets[col];
+                        const offset = offsetBase + row * csv.getZigTypeSize(ct);
+                        const zigType = comptime csv.getZigType(ct);
+                        const value = @ptrCast(*zigType, @alignCast(@alignOf(zigType), &csvParser.data.data[offset])).*;
+                        std.debug.print("{},", .{value});
+                    },
+                }
+            }
+            std.debug.print("\n", .{});
+        }
+    }
     std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
-        @intToFloat(f32, parserAuto.csvMetadata.fileSize) / 1024 / 1024,
-        parserAuto.csvMetadataExt.numRows,
-        parserAuto.csvMetadata.numColumns,
-        @intToFloat(f32, parserAuto.csvData.data.len) / 1024 / 1024,
+        @intToFloat(f32, csvParser.metadata.fileSize) / 1024 / 1024,
+        csvParser.numRows(),
+        csvParser.numColumns(),
+        @intToFloat(f32, csvParser.data.data.len) / 1024 / 1024,
         elapsedS,
     });
 }

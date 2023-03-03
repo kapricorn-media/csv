@@ -127,7 +127,7 @@ const ColumnType = enum(u8) {
     string,
 };
 
-fn getZigType(comptime columnType: ColumnType) type
+pub fn getZigType(comptime columnType: ColumnType) type
 {
     return switch (columnType) {
         .none => void,
@@ -140,7 +140,7 @@ fn getZigType(comptime columnType: ColumnType) type
     };
 }
 
-fn getZigTypeSize(columnType: ColumnType) usize
+pub fn getZigTypeSize(columnType: ColumnType) usize
 {
     return switch (columnType) {
         .none, .string => 0,
@@ -237,21 +237,25 @@ const CsvMetadataExt = struct {
         }
 
         for (self.columnOffsets) |_, i| {
-            const prev = if (i == 0) 0 else self.columnOffsets[i - 1];
-            self.columnOffsets[i] = prev + getZigTypeSize(self.columnTypes[i]) * self.numRows;
+            if (i == 0) {
+                self.columnOffsets[i] = 0;
+            } else {
+                const prevSize = getZigTypeSize(self.columnTypes[i - 1]) * self.numRows;
+                self.columnOffsets[i] = self.columnOffsets[i - 1] + prevSize;
+            }
         }
 
         return self;
     }
 };
 
-fn getCsvDataSize(metadata: CsvMetadataExt) usize
+fn getCsvDataSize(metadataExt: CsvMetadataExt) usize
 {
     var size: usize = 0;
-    for (metadata.columnTypes) |columnType| {
+    for (metadataExt.columnTypes) |columnType| {
         size += getZigTypeSize(columnType);
     }
-    size *= metadata.numRows;
+    size *= metadataExt.numRows;
     return size;
 }
 
@@ -261,7 +265,7 @@ const CsvData = struct {
     const Self = @This();
 
     fn init(
-        metadata: CsvMetadataExt,
+        metadataExt: CsvMetadataExt,
         filePath: []const u8,
         fileStart: usize,
         fileBytes: usize,
@@ -269,7 +273,7 @@ const CsvData = struct {
         parseState: *ParseState,
         allocator: std.mem.Allocator) !Self
     {
-        const size = getCsvDataSize(metadata);
+        const size = getCsvDataSize(metadataExt);
         var self = Self {
             .data = try allocator.alloc(u8, size),
         };
@@ -293,9 +297,9 @@ const CsvData = struct {
             }
 
             var delimIt = std.mem.split(u8, line, delim);
-            for (metadata.columnTypes) |columnType, i| {
+            for (metadataExt.columnTypes) |columnType, i| {
                 const valueString = delimIt.next() orelse "";
-                self.parseAndSaveValue(metadata, valueString, columnType, row, i) catch |err| {
+                self.parseAndSaveValue(metadataExt, valueString, columnType, row, i) catch |err| {
                     std.log.err("{} when parsing valueString \"{s}\"", .{err, valueString});
                     return err;
                 };
@@ -308,23 +312,29 @@ const CsvData = struct {
 
     fn parseAndSaveValue(
         self: *Self,
-        metadata: CsvMetadataExt,
+        metadataExt: CsvMetadataExt,
         valueString: []const u8,
         columnType: ColumnType,
         row: usize,
         col: usize) !void
     {
-        const offsetBase = metadata.columnOffsets[col];
+        const offsetBase = metadataExt.columnOffsets[col];
         const offset = offsetBase + row * getZigTypeSize(columnType);
         switch (columnType) {
             .none, .string => {},
-            .f32 => {
-                const value = if (valueString.len == 0) 0 else try std.fmt.parseFloat(f32, valueString);
-                @ptrCast(*f32, @alignCast(4, &self.data[offset])).* = value;
-            },
             inline else => |ct| {
                 const zigType = comptime getZigType(ct);
-                const value = if (valueString.len == 0) 0 else try std.fmt.parseInt(zigType, valueString, 10);
+                const value = blk: {
+                    if (valueString.len == 0) {
+                        break :blk 0;
+                    } else {
+                        if (zigType == f32) {
+                            break :blk try std.fmt.parseFloat(f32, valueString);
+                        } else {
+                            break :blk try std.fmt.parseInt(zigType, valueString, 10);
+                        }
+                    }
+                };
                 @ptrCast(*zigType, @alignCast(@alignOf(zigType), &self.data[offset])).* = value;
             },
         }
@@ -335,22 +345,51 @@ pub const CsvFileParserAuto = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     delim: []const u8,
-    csvMetadata: CsvMetadata,
-    csvMetadataExt: CsvMetadataExt,
-    csvData: CsvData,
+    metadata: CsvMetadata,
+    metadataExt: CsvMetadataExt,
+    data: CsvData,
 
     const Self = @This();
 
-    pub fn init(delim: []const u8, allocator: std.mem.Allocator) Self
+    pub fn init(filePath: []const u8, delim: []const u8, allocator: std.mem.Allocator) !Self
     {
-        return Self {
+        var self = Self {
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .delim = delim,
-            .csvMetadata = undefined,
-            .csvMetadataExt = undefined,
-            .csvData = undefined,
+            .metadata = undefined,
+            .metadataExt = undefined,
+            .data = undefined,
         };
+
+        const arenaAllocator = self.arena.allocator();
+        var tempArena = std.heap.ArenaAllocator.init(self.allocator);
+        defer tempArena.deinit();
+        const tempAllocator = tempArena.allocator();
+
+        var parseState = try tempAllocator.create(ParseState);
+        self.metadata = try CsvMetadata.init(filePath, self.delim, parseState);
+        self.metadataExt = try CsvMetadataExt.init(
+            self.metadata.numColumns,
+            filePath,
+            0,
+            self.metadata.fileSize,
+            self.delim,
+            parseState,
+            arenaAllocator,
+            arenaAllocator
+        );
+        self.data = try CsvData.init(
+            self.metadataExt,
+            filePath,
+            0,
+            self.metadata.fileSize,
+            self.delim,
+            parseState,
+            arenaAllocator
+        );
+
+        return self;
     }
 
     pub fn deinit(self: *Self) void
@@ -358,33 +397,13 @@ pub const CsvFileParserAuto = struct {
         self.arena.deinit();
     }
 
-    pub fn parse(self: *Self, filePath: []const u8) !void
+    pub fn numRows(self: *const Self) usize
     {
-        const arenaAllocator = self.arena.allocator();
-        var tempArena = std.heap.ArenaAllocator.init(self.allocator);
-        defer tempArena.deinit();
-        const tempAllocator = tempArena.allocator();
+        return self.metadataExt.numRows;
+    }
 
-        var parseState = try tempAllocator.create(ParseState);
-        self.csvMetadata = try CsvMetadata.init(filePath, self.delim, parseState);
-        self.csvMetadataExt = try CsvMetadataExt.init(
-            self.csvMetadata.numColumns,
-            filePath,
-            0,
-            self.csvMetadata.fileSize,
-            self.delim,
-            parseState,
-            arenaAllocator,
-            arenaAllocator
-        );
-        self.csvData = try CsvData.init(
-            self.csvMetadataExt,
-            filePath,
-            0,
-            self.csvMetadata.fileSize,
-            self.delim,
-            parseState,
-            arenaAllocator
-        );
+    pub fn numColumns(self: *const Self) usize
+    {
+        return self.metadata.numColumns;
     }
 };
