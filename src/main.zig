@@ -23,25 +23,16 @@ pub fn main() !void
     const elapsedNs = @intToFloat(f64, timeEnd) - @intToFloat(f64, timeStart);
     const elapsedS = elapsedNs / 1000.0 / 1000.0 / 1000.0;
 
-    // for (parserAuto.columnData.items) |c| {
-    //     std.debug.print("{s}: {}\n", .{c.name, c.type});
-    // }
-    // if (parserAuto.rows.items.len >= 10) {
-    //     for (parserAuto.rows.items[0..10]) |row| {
-    //         std.debug.print("{any}\n\n", .{row});
-    //     }
-    //     std.debug.print("{any}\n\n", .{parserAuto.rows.items[parserAuto.rows.items.len - 1]});
-    // }
-
     for (parserAuto.csvMetadataExt.columnNames) |_, i| {
         std.debug.print("{s}: {}\n", .{
             parserAuto.csvMetadataExt.columnNames[i], parserAuto.csvMetadataExt.columnTypes[i]
         });
     }
-    std.debug.print("Parsed {} MB, {} rows, {} columns\n{d:.3} seconds\n", .{
-        parserAuto.csvMetadata.fileSize / 1024 / 1024,
+    std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
+        @intToFloat(f32, parserAuto.csvMetadata.fileSize) / 1024 / 1024,
         parserAuto.csvMetadataExt.numRows,
         parserAuto.csvMetadata.numColumns,
+        @intToFloat(f32, parserAuto.csvData.data.len) / 1024 / 1024,
         elapsedS,
     });
 }

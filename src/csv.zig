@@ -95,25 +95,27 @@ const LineIterator = struct {
 const CsvMetadata = struct {
     fileSize: usize,
     numColumns: usize,
+
+    const Self = @This();
+
+    fn init(filePath: []const u8, delim: []const u8, parseState: *ParseState) !Self
+    {
+        const cwd = std.fs.cwd();
+        var file = cwd.openFile(filePath, .{}) catch |err| {
+            std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+            return err;
+        };
+        defer file.close();
+        var stat = try file.stat();
+
+        var lineIt = LineIterator.init(parseState, 0);
+        const header = try lineIt.next(file.reader()) orelse return error.NoCsvHeader;
+        return Self {
+            .fileSize = stat.size,
+            .numColumns = std.mem.count(u8, header, delim) + 1,
+        };
+    }
 };
-
-fn getCsvMetadata(filePath: []const u8, delim: []const u8, parseState: *ParseState) !CsvMetadata
-{
-    const cwd = std.fs.cwd();
-    var file = cwd.openFile(filePath, .{}) catch |err| {
-        std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
-        return err;
-    };
-    defer file.close();
-    var stat = try file.stat();
-
-    var lineIt = LineIterator.init(parseState, 0);
-    const header = try lineIt.next(file.reader()) orelse return error.NoCsvHeader;
-    return CsvMetadata {
-        .fileSize = stat.size,
-        .numColumns = std.mem.count(u8, header, delim) + 1,
-    };
-}
 
 const ColumnType = enum(u8) {
     none = 0,
@@ -138,30 +140,13 @@ fn getZigType(comptime columnType: ColumnType) type
     };
 }
 
-const CsvMetadataExt = struct {
-    numRows: usize,
-    columnNames: [][]const u8,
-    columnTypes: []ColumnType,
-
-    const Self = @This();
-
-    fn init(numColumns: usize, allocator: std.mem.Allocator) !Self
-    {
-        var columnNames = try allocator.alloc([]const u8, numColumns);
-        for (columnNames) |*name| {
-            name.* = "";
-        }
-        var columnTypes = try allocator.alloc(ColumnType, numColumns);
-        for (columnTypes) |*columnType| {
-            columnType.* = .none;
-        }
-        return Self {
-            .numRows = 0,
-            .columnNames = columnNames,
-            .columnTypes = columnTypes,
-        };
-    }
-};
+fn getZigTypeSize(columnType: ColumnType) usize
+{
+    return switch (columnType) {
+        .none, .string => 0,
+        inline else => |ct| @sizeOf(getZigType(ct)),
+    };
+}
 
 fn getColumnType(valueString: []const u8, currentType: ColumnType) ColumnType
 {
@@ -188,50 +173,162 @@ fn getColumnType(valueString: []const u8, currentType: ColumnType) ColumnType
     }
 }
 
-fn getCsvMetadataExt(
-    filePath: []const u8,
-    fileStart: usize,
-    fileBytes: usize,
-    delim: []const u8,
-    parseState: *ParseState,
-    metadata: *CsvMetadataExt,
-    stringAllocator: std.mem.Allocator) !void
-{
-    const cwd = std.fs.cwd();
-    var file = cwd.openFile(filePath, .{}) catch |err| {
-        std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
-        return err;
-    };
-    defer file.close();
-    try file.seekTo(fileStart);
+const CsvMetadataExt = struct {
+    numRows: usize,
+    columnNames: [][]const u8,
+    columnTypes: []ColumnType,
+    columnOffsets: []usize,
 
-    var lineIt = LineIterator.init(parseState, fileBytes);
-    const fileReader = file.reader();
-    var header = true;
-    while (try lineIt.next(fileReader)) |line| {
-        if (header) {
-            header = false;
+    const Self = @This();
+
+    fn init(
+        numColumns: usize,
+        filePath: []const u8,
+        fileStart: usize,
+        fileBytes: usize,
+        delim: []const u8,
+        parseState: *ParseState,
+        allocator: std.mem.Allocator,
+        stringAllocator: std.mem.Allocator) !Self
+    {
+        var self = Self {
+            .numRows = 0,
+            .columnNames = try allocator.alloc([]const u8, numColumns),
+            .columnTypes = try allocator.alloc(ColumnType, numColumns),
+            .columnOffsets = try allocator.alloc(usize, numColumns),
+        };
+        for (self.columnNames) |_, i| {
+            self.columnNames[i] = "";
+            self.columnTypes[i] = .none;
+            self.columnOffsets[i] = 0;
+        }
+
+        const cwd = std.fs.cwd();
+        var file = cwd.openFile(filePath, .{}) catch |err| {
+            std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+            return err;
+        };
+        defer file.close();
+        try file.seekTo(fileStart);
+
+        var lineIt = LineIterator.init(parseState, fileBytes);
+        const fileReader = file.reader();
+        var header = true;
+        while (try lineIt.next(fileReader)) |line| {
+            if (header) {
+                header = false;
+                var delimIt = std.mem.split(u8, line, delim);
+                for (self.columnNames) |_, i| {
+                    const columnName = delimIt.next() orelse return error.MissingColumnName;
+                    self.columnNames[i] = try stringAllocator.dupe(u8, columnName);
+                }
+                if (delimIt.rest().len > 0) {
+                    return error.ExtraHeaderData;
+                }
+                continue;
+            }
+
             var delimIt = std.mem.split(u8, line, delim);
-            for (metadata.columnNames) |_, i| {
-                const columnName = delimIt.next() orelse return error.MissingColumnName;
-                metadata.columnNames[i] = try stringAllocator.dupe(u8, columnName);
+            for (self.columnTypes) |_, i| {
+                const valueString = delimIt.next() orelse "";
+                self.columnTypes[i] = getColumnType(valueString, self.columnTypes[i]);
             }
-            if (delimIt.rest().len > 0) {
-                return error.ExtraHeaderData;
-            }
-            continue;
+            self.numRows += 1;
         }
 
-        var delimIt = std.mem.split(u8, line, delim);
-        for (metadata.columnTypes) |_, i| {
-            const valueString = delimIt.next() orelse "";
-            metadata.columnTypes[i] = getColumnType(valueString, metadata.columnTypes[i]);
+        for (self.columnOffsets) |_, i| {
+            const prev = if (i == 0) 0 else self.columnOffsets[i - 1];
+            self.columnOffsets[i] = prev + getZigTypeSize(self.columnTypes[i]) * self.numRows;
         }
-        metadata.numRows += 1;
+
+        return self;
     }
+};
+
+fn getCsvDataSize(metadata: CsvMetadataExt) usize
+{
+    var size: usize = 0;
+    for (metadata.columnTypes) |columnType| {
+        size += getZigTypeSize(columnType);
+    }
+    size *= metadata.numRows;
+    return size;
 }
 
 const CsvData = struct {
+    data: []u8,
+
+    const Self = @This();
+
+    fn init(
+        metadata: CsvMetadataExt,
+        filePath: []const u8,
+        fileStart: usize,
+        fileBytes: usize,
+        delim: []const u8,
+        parseState: *ParseState,
+        allocator: std.mem.Allocator) !Self
+    {
+        const size = getCsvDataSize(metadata);
+        var self = Self {
+            .data = try allocator.alloc(u8, size),
+        };
+
+        const cwd = std.fs.cwd();
+        var file = cwd.openFile(filePath, .{}) catch |err| {
+            std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
+            return err;
+        };
+        defer file.close();
+        try file.seekTo(fileStart);
+
+        var lineIt = LineIterator.init(parseState, fileBytes);
+        const fileReader = file.reader();
+        var header = true;
+        var row: usize = 0;
+        while (try lineIt.next(fileReader)) |line| {
+            if (header) {
+                header = false;
+                continue;
+            }
+
+            var delimIt = std.mem.split(u8, line, delim);
+            for (metadata.columnTypes) |columnType, i| {
+                const valueString = delimIt.next() orelse "";
+                self.parseAndSaveValue(metadata, valueString, columnType, row, i) catch |err| {
+                    std.log.err("{} when parsing valueString \"{s}\"", .{err, valueString});
+                    return err;
+                };
+            }
+            row += 1;
+        }
+
+        return self;
+    }
+
+    fn parseAndSaveValue(
+        self: *Self,
+        metadata: CsvMetadataExt,
+        valueString: []const u8,
+        columnType: ColumnType,
+        row: usize,
+        col: usize) !void
+    {
+        const offsetBase = metadata.columnOffsets[col];
+        const offset = offsetBase + row * getZigTypeSize(columnType);
+        switch (columnType) {
+            .none, .string => {},
+            .f32 => {
+                const value = if (valueString.len == 0) 0 else try std.fmt.parseFloat(f32, valueString);
+                @ptrCast(*f32, @alignCast(4, &self.data[offset])).* = value;
+            },
+            inline else => |ct| {
+                const zigType = comptime getZigType(ct);
+                const value = if (valueString.len == 0) 0 else try std.fmt.parseInt(zigType, valueString, 10);
+                @ptrCast(*zigType, @alignCast(@alignOf(zigType), &self.data[offset])).* = value;
+            },
+        }
+    }
 };
 
 pub const CsvFileParserAuto = struct {
@@ -269,18 +366,25 @@ pub const CsvFileParserAuto = struct {
         const tempAllocator = tempArena.allocator();
 
         var parseState = try tempAllocator.create(ParseState);
-        self.csvMetadata = try getCsvMetadata(filePath, self.delim, parseState);
-        self.csvMetadataExt = try CsvMetadataExt.init(self.csvMetadata.numColumns, arenaAllocator);
-        try getCsvMetadataExt(
+        self.csvMetadata = try CsvMetadata.init(filePath, self.delim, parseState);
+        self.csvMetadataExt = try CsvMetadataExt.init(
+            self.csvMetadata.numColumns,
             filePath,
             0,
             self.csvMetadata.fileSize,
             self.delim,
             parseState,
-            &self.csvMetadataExt,
+            arenaAllocator,
             arenaAllocator
         );
-
-        self.csvData = undefined;
+        self.csvData = try CsvData.init(
+            self.csvMetadataExt,
+            filePath,
+            0,
+            self.csvMetadata.fileSize,
+            self.delim,
+            parseState,
+            arenaAllocator
+        );
     }
 };
