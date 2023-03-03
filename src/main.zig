@@ -35,7 +35,7 @@ pub fn main() !void
 
     std.debug.print("Parsed {} MB, {} rows, {} columns\n{d:.3} seconds\n", .{
         parserAuto.csvMetadata.fileSize / 1024 / 1024,
-        0,
+        parserAuto.csvMetadataExt.numRows,
         parserAuto.csvMetadata.numColumns,
         elapsedS,
     });

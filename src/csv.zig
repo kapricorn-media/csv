@@ -1,110 +1,5 @@
 const std = @import("std");
 
-fn countScalar(comptime T: type, haystack: []const T, needle: T) usize {
-    var i: usize = 0;
-    var found: usize = 0;
-
-    while (std.mem.indexOfScalarPos(T, haystack, i, needle)) |idx| {
-        i = idx + 1;
-        found += 1;
-    }
-
-    return found;
-}
-
-const ColumnType = enum(u8) {
-    none = 0,
-    i8,
-    i16,
-    i32,
-    i64,
-    f32,
-    string,
-};
-
-fn getZigType(comptime columnType: ColumnType) type
-{
-    return switch (columnType) {
-        .none => void,
-        .i8 => i8,
-        .i16 => i16,
-        .i32 => i32,
-        .i64 => i64,
-        .f32 => f32,
-        .string => []const u8,
-    };
-}
-
-const ColumnMetadata = struct {
-    names: [][]const u8,
-    types: []ColumnType,
-
-    const Self = @This();
-
-    fn init(numColumns: usize, allocator: std.mem.Allocator) !Self
-    {
-        var names = try allocator.alloc([]const u8, numColumns);
-        for (names) |*name| {
-            name.* = "";
-        }
-        var types = try allocator.alloc(ColumnType, numColumns);
-        for (types) |*columnType| {
-            columnType.* = .none;
-        }
-        return Self {
-            .names = names,
-            .types = types,
-        };
-    }
-};
-
-const ColumnData = struct {
-    name: []const u8, // not great for cache locality
-    type: ColumnType,
-};
-
-const ColumnValue = union(ColumnType) {
-    none: void,
-    i8: i8,
-    i16: i16,
-    i32: i32,
-    i64: i64,
-    f32: f32,
-    string: []const u8,
-};
-
-fn parseColumn(valueString: []const u8, columnType: *ColumnType) !?ColumnValue
-{
-    if (valueString.len == 0) {
-        return null;
-    }
-
-    var ct = columnType.*;
-    while (true) : (ct = @intToEnum(ColumnType, @enumToInt(ct) + 1)) {
-        switch (ct) {
-            .none => {},
-            .f32 => {
-                const value = std.fmt.parseFloat(f32, valueString) catch continue;
-                columnType.* = ct;
-                return ColumnValue {
-                    .f32 = value
-                };
-            },
-            .string => {
-                columnType.* = ct;
-                return ColumnValue {
-                    .string = ""
-                };
-            },
-            inline else => |t| {
-                const value = std.fmt.parseInt(getZigType(t), valueString, 10) catch continue;
-                columnType.* = ct;
-                return @unionInit(ColumnValue, @tagName(t), value);
-            },
-        }
-    }
-}
-
 const ParseState = struct {
     fileBuf: [16 * 1024]u8,
     fileSlice: []const u8,
@@ -220,13 +115,86 @@ fn getCsvMetadata(filePath: []const u8, delim: []const u8, parseState: *ParseSta
     };
 }
 
-fn getColumnMetadata(
+const ColumnType = enum(u8) {
+    none = 0,
+    i8,
+    i16,
+    i32,
+    i64,
+    f32,
+    string,
+};
+
+fn getZigType(comptime columnType: ColumnType) type
+{
+    return switch (columnType) {
+        .none => void,
+        .i8 => i8,
+        .i16 => i16,
+        .i32 => i32,
+        .i64 => i64,
+        .f32 => f32,
+        .string => []const u8,
+    };
+}
+
+const CsvMetadataExt = struct {
+    numRows: usize,
+    columnNames: [][]const u8,
+    columnTypes: []ColumnType,
+
+    const Self = @This();
+
+    fn init(numColumns: usize, allocator: std.mem.Allocator) !Self
+    {
+        var columnNames = try allocator.alloc([]const u8, numColumns);
+        for (columnNames) |*name| {
+            name.* = "";
+        }
+        var columnTypes = try allocator.alloc(ColumnType, numColumns);
+        for (columnTypes) |*columnType| {
+            columnType.* = .none;
+        }
+        return Self {
+            .numRows = 0,
+            .columnNames = columnNames,
+            .columnTypes = columnTypes,
+        };
+    }
+};
+
+fn getColumnType(valueString: []const u8, currentType: ColumnType) ColumnType
+{
+    if (valueString.len == 0) {
+        return currentType;
+    }
+
+    var ct = currentType;
+    while (true) : (ct = @intToEnum(ColumnType, @enumToInt(ct) + 1)) {
+        switch (ct) {
+            .none => {},
+            .f32 => {
+                _ = std.fmt.parseFloat(f32, valueString) catch continue;
+                return ct;
+            },
+            .string => {
+                return ct;
+            },
+            inline else => |t| {
+                _ = std.fmt.parseInt(getZigType(t), valueString, 10) catch continue;
+                return ct;
+            },
+        }
+    }
+}
+
+fn getCsvMetadataExt(
     filePath: []const u8,
     fileStart: usize,
     fileBytes: usize,
     delim: []const u8,
     parseState: *ParseState,
-    columnMetadata: *ColumnMetadata,
+    metadata: *CsvMetadataExt,
     stringAllocator: std.mem.Allocator) !void
 {
     const cwd = std.fs.cwd();
@@ -244,9 +212,9 @@ fn getColumnMetadata(
         if (header) {
             header = false;
             var delimIt = std.mem.split(u8, line, delim);
-            for (columnMetadata.names) |_, i| {
+            for (metadata.columnNames) |_, i| {
                 const columnName = delimIt.next() orelse return error.MissingColumnName;
-                columnMetadata.names[i] = try stringAllocator.dupe(u8, columnName);
+                metadata.columnNames[i] = try stringAllocator.dupe(u8, columnName);
             }
             if (delimIt.rest().len > 0) {
                 return error.ExtraHeaderData;
@@ -255,19 +223,24 @@ fn getColumnMetadata(
         }
 
         var delimIt = std.mem.split(u8, line, delim);
-        for (columnMetadata.types) |_, i| {
+        for (metadata.columnTypes) |_, i| {
             const valueString = delimIt.next() orelse "";
-            _ = try parseColumn(valueString, &columnMetadata.types[i]);
+            metadata.columnTypes[i] = getColumnType(valueString, metadata.columnTypes[i]);
         }
+        metadata.numRows += 1;
     }
 }
+
+const CsvData = struct {
+};
 
 pub const CsvFileParserAuto = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     delim: []const u8,
     csvMetadata: CsvMetadata,
-    columnMetadata: ColumnMetadata,
+    csvMetadataExt: CsvMetadataExt,
+    csvData: CsvData,
 
     const Self = @This();
 
@@ -278,7 +251,8 @@ pub const CsvFileParserAuto = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .delim = delim,
             .csvMetadata = undefined,
-            .columnMetadata = undefined,
+            .csvMetadataExt = undefined,
+            .csvData = undefined,
         };
     }
 
@@ -296,86 +270,17 @@ pub const CsvFileParserAuto = struct {
 
         var parseState = try tempAllocator.create(ParseState);
         self.csvMetadata = try getCsvMetadata(filePath, self.delim, parseState);
-        self.columnMetadata = try ColumnMetadata.init(self.csvMetadata.numColumns, arenaAllocator);
-        try getColumnMetadata(filePath, 0, self.csvMetadata.fileSize, self.delim, parseState, &self.columnMetadata, arenaAllocator);
-        // for (columnMetadata.names) |_, i| {
-        //     std.debug.print("{s}: {}\n", .{columnMetadata.names[i], columnMetadata.types[i]});
-        // }
+        self.csvMetadataExt = try CsvMetadataExt.init(self.csvMetadata.numColumns, arenaAllocator);
+        try getCsvMetadataExt(
+            filePath,
+            0,
+            self.csvMetadata.fileSize,
+            self.delim,
+            parseState,
+            &self.csvMetadataExt,
+            arenaAllocator
+        );
 
-        // const cwd = std.fs.cwd();
-        // const file = cwd.openFile(filePath, .{}) catch |err| {
-        //     std.log.err("Error \"{}\" when opening file path \"{s}\"", .{err, filePath});
-        //     return err;
-        // };
-
-        // var buf = try self.allocator.alloc(u8, 16 * 1024);
-        // var lineBuf = std.ArrayList(u8).init(tempAllocator);
-        // var valuesBuf = try tempAllocator.alloc(?ColumnValue, 512);
-        // var totalBytes: usize = 0;
-        // var header = true;
-        // while (true) {
-        //     const numBytes = try file.read(buf);
-        //     if (numBytes == 0) {
-        //         break;
-        //     }
-        //     totalBytes += numBytes;
-
-        //     const bytes = buf[0..numBytes];
-        //     var remaining = bytes;
-        //     while (true) {
-        //         if (std.mem.indexOfScalar(u8, remaining, '\n')) |i| {
-        //             defer {
-        //                 lineBuf.clearRetainingCapacity();
-        //                 remaining = remaining[i+1..];
-        //             }
-
-        //             var line = blk: {
-        //                 if (lineBuf.items.len > 0) {
-        //                     try lineBuf.appendSlice(remaining[0..i]);
-        //                     break :blk lineBuf.items;
-        //                 } else {
-        //                     break :blk remaining[0..i];
-        //                 }
-        //             };
-        //             if (line.len > 0 and line[line.len - 1] == '\r') {
-        //                 line = line[0..line.len - 1];
-        //             }
-
-        //             if (header) {
-        //                 header = false;
-
-        //                 var columnIt = std.mem.split(u8, line, self.delim);
-        //                 while (columnIt.next()) |c| {
-        //                     try self.columnData.append(ColumnData {
-        //                         .name = try self.allocator.dupe(u8, c),
-        //                         .type = .none,
-        //                     });
-        //                 }
-
-        //                 if (self.columnData.items.len > valuesBuf.len) {
-        //                     return error.TooManyColumns;
-        //                 }
-        //             } else {
-        //                 try parseRow(line, self.delim, self.columnData.items, valuesBuf[0..self.columnData.items.len]);
-        //                 // try self.rows.append(values);
-        //             }
-        //         } else {
-        //             if (remaining.len > 0) {
-        //                 try lineBuf.appendSlice(remaining);
-        //             }
-        //             break;
-        //         }
-        //     }
-        // }
-
-        // if (lineBuf.items.len > 0) {
-        //     try parseRow(lineBuf.items, self.delim, self.columnData.items, valuesBuf[0..self.columnData.items.len]);
-        //     // try self.rows.append(values);
-        // }
-
-        // std.debug.print(
-        //     "Read {} MB file, {} rows, {} columns\n",
-        //     .{totalBytes / 1024 / 1024, self.rows.items.len, self.columnData.items.len}
-        // );
+        self.csvData = undefined;
     }
 };
