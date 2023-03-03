@@ -33,6 +33,11 @@ pub fn main() !void
     //     std.debug.print("{any}\n\n", .{parserAuto.rows.items[parserAuto.rows.items.len - 1]});
     // }
 
+    for (parserAuto.csvMetadataExt.columnNames) |_, i| {
+        std.debug.print("{s}: {}\n", .{
+            parserAuto.csvMetadataExt.columnNames[i], parserAuto.csvMetadataExt.columnTypes[i]
+        });
+    }
     std.debug.print("Parsed {} MB, {} rows, {} columns\n{d:.3} seconds\n", .{
         parserAuto.csvMetadata.fileSize / 1024 / 1024,
         parserAuto.csvMetadataExt.numRows,
