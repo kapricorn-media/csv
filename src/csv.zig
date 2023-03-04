@@ -117,7 +117,7 @@ const CsvMetadata = struct {
     }
 };
 
-const ColumnType = enum(u8) {
+pub const ColumnType = enum(u8) {
     none = 0,
     i8,
     i16,
@@ -147,6 +147,16 @@ pub fn getZigTypeSize(columnType: ColumnType) usize
         inline else => |ct| @sizeOf(getZigType(ct)),
     };
 }
+
+pub const ColumnValues = union(ColumnType) {
+    none: void,
+    i8: []i8,
+    i16: []i16,
+    i32: []i32,
+    i64: []i64,
+    f32: []f32,
+    string: void,
+};
 
 fn getColumnType(valueString: []const u8, currentType: ColumnType) ColumnType
 {
@@ -405,5 +415,33 @@ pub const CsvFileParserAuto = struct {
     pub fn numColumns(self: *const Self) usize
     {
         return self.metadata.numColumns;
+    }
+
+    pub fn columnIndex(self: *const Self, name: []const u8) ?usize
+    {
+        for (self.metadataExt.columnNames) |columnName, i| {
+            if (std.mem.eql(u8, columnName, name)) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    pub fn getColumnValues(self: *const Self, name: []const u8) ?ColumnValues
+    {
+        const index = self.columnIndex(name) orelse return null;
+        return self.getColumnIndexValues(index);
+    }
+
+    pub fn getColumnIndexValues(self: *const Self, index: usize) ?ColumnValues
+    {
+        if (index >= self.metadataExt.columnTypes.len) {
+            return null;
+        }
+        const columnType = self.metadataExt.columnTypes[index];
+        switch (columnType) {
+            .none, .string => return ColumnValues {.none = {}},
+            inline else => return ColumnValues {.i8 = &.{}},
+        }
     }
 };
