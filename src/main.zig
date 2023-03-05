@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const csv = @import("csv.zig");
+const stats = @import("stats.zig");
 
 pub fn main() !void
 {
@@ -27,6 +28,7 @@ pub fn main() !void
             csvParser.metadataExt.columnNames[i], csvParser.metadataExt.columnTypes[i]
         });
     }
+
     const numSampleRows = 5;
     if (csvParser.metadataExt.numRows >= numSampleRows) {
         var row: usize = 0;
@@ -48,12 +50,20 @@ pub fn main() !void
             std.debug.print("\n", .{});
         }
     }
-    if (csvParser.getColumnValues("sexw")) |columnValues| {
-        for (columnValues.f32) |v| {
-            std.debug.print("{d:.3} ", .{v});
-        }
-        std.debug.print("\n", .{});
+
+    if (csvParser.getColumnValues("sexw")) |cv| {
+        const values = cv.f32;
+        // for (values) |v| {
+        //     std.debug.print("{d:.3} ", .{v});
+        // }
+        // std.debug.print("\n", .{});
+        std.debug.print("sexw mean: {d:.3}\n", .{stats.mean(f32, values)});
     }
+    if (csvParser.getColumnValues("cis")) |cv| {
+        const values = cv.i8;
+        std.debug.print("cis  mean: {d:.3}\n", .{stats.mean(i8, values)});
+    }
+
     std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
         @intToFloat(f32, csvParser.metadata.fileSize) / 1024 / 1024,
         csvParser.numRows(),
