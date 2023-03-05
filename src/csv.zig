@@ -270,7 +270,7 @@ fn getCsvDataSize(metadataExt: CsvMetadataExt) usize
 }
 
 const CsvData = struct {
-    data: []u8,
+    data: []u8 align(8),
 
     const Self = @This();
 
@@ -440,8 +440,18 @@ pub const CsvFileParserAuto = struct {
         }
         const columnType = self.metadataExt.columnTypes[index];
         switch (columnType) {
-            .none, .string => return ColumnValues {.none = {}},
-            inline else => return ColumnValues {.i8 = &.{}},
+            .none => {
+                return .{ .none = {} };
+            },
+            .string => {
+                return .{ .string = {} };
+            },
+            inline else => |ct| {
+                const zigType = comptime getZigType(ct);
+                const columnOffset = self.metadataExt.columnOffsets[index];
+                const ptr = @ptrCast([*]zigType, @alignCast(@alignOf([]zigType), &self.data.data[columnOffset]));
+                return @unionInit(ColumnValues, std.meta.tagName(ct), ptr[0..self.metadataExt.numRows]);
+            }
         }
     }
 };

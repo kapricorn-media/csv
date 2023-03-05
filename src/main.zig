@@ -48,8 +48,11 @@ pub fn main() !void
             std.debug.print("\n", .{});
         }
     }
-    if (csvParser.getColumnValues("sexrate")) |columnValues| {
-        std.debug.print("{}\n", .{columnValues});
+    if (csvParser.getColumnValues("sexw")) |columnValues| {
+        for (columnValues.f32) |v| {
+            std.debug.print("{d:.3} ", .{v});
+        }
+        std.debug.print("\n", .{});
     }
     std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
         @intToFloat(f32, csvParser.metadata.fileSize) / 1024 / 1024,
