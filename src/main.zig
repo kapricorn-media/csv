@@ -65,7 +65,7 @@ pub fn main() !void
         std.debug.print("cis  mean: {d:.3}\n", .{stats.mean(i8, values)});
     }
 
-    plot.plot();
+    try plot.plot(gpa.allocator(), "plot.png");
 
     std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
         @intToFloat(f32, csvParser.metadata.fileSize) / 1024 / 1024,
