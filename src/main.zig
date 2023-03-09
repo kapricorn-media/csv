@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const csv = @import("csv.zig");
+const plot = @import("plot.zig");
 const stats = @import("stats.zig");
 
 pub fn main() !void
@@ -63,6 +64,8 @@ pub fn main() !void
         const values = cv.i8;
         std.debug.print("cis  mean: {d:.3}\n", .{stats.mean(i8, values)});
     }
+
+    plot.plot();
 
     std.debug.print("Parsed {d:.3} MB, {} rows, {} columns, {d:.3} MB data size\n{d:.3} seconds\n", .{
         @intToFloat(f32, csvParser.metadata.fileSize) / 1024 / 1024,
